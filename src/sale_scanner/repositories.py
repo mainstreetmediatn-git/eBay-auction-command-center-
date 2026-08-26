@@ -1,11 +1,12 @@
 from __future__ import annotations
 from decimal import Decimal
 from datetime import datetime
-from typing import Any, Callable, Mapping, Optional
+from typing import Any
 import json
 from .connectors import NormalizedListing
 from .models import AuctionEvaluation, CompResult
 from .search_models import SavedSearch
+from .dispatcher import DispatchCandidate
 
 try:
     import psycopg
@@ -26,10 +27,12 @@ def _json(value: Any) -> str: return json.dumps(value, default=_json_default, se
 
 class SaleScannerRepository:
     def __init__(self, connection: Any): self.connection = connection
+
     @classmethod
     def connect(cls, dsn: str) -> "SaleScannerRepository":
         if psycopg is None: raise RepositoryError("psycopg is not installed; install sale-scanner-core[db]")
         return cls(psycopg.connect(dsn, row_factory=dict_row))
+
     def close(self) -> None: self.connection.close()
 
     def ingest_listing(self, listing: NormalizedListing, *, product_id=None, asset_id=None, sales_tax=Decimal("0")) -> None:
@@ -87,6 +90,48 @@ class SaleScannerRepository:
         with self.connection.transaction():
             with self.connection.cursor() as cur:
                 cur.execute("""UPDATE saved_searches SET last_polled_at=NOW(),next_poll_at=NOW()+(poll_interval_seconds*INTERVAL '1 second'),last_error=%s,updated_at=NOW() WHERE search_id=%s""",(None if success else error,search_id))
+
+    def claim_dispatch_candidates(self, channel_id, *, states=("BUY_ZONE","BID"), min_expected_profit=Decimal("0"), lease_seconds=120, limit=50):
+        with self.connection.transaction():
+            with self.connection.cursor() as cur:
+                cur.execute("""
+                    WITH candidates AS (
+                        SELECT d.decision_id
+                        FROM decisions d
+                        LEFT JOIN dispatch_ledgers dl ON dl.decision_id=d.decision_id AND dl.channel_id=%s
+                        WHERE d.decision_state = ANY(%s)
+                          AND COALESCE(d.expected_net_profit,0) >= %s
+                          AND (dl.decision_id IS NULL OR dl.status='FAILED' OR (dl.status='PROCESSING' AND dl.lease_expires_at < NOW()))
+                        ORDER BY d.evaluated_at ASC
+                        FOR UPDATE OF d SKIP LOCKED
+                        LIMIT %s
+                    ), claimed AS (
+                        INSERT INTO dispatch_ledgers (decision_id,channel_id,status,attempts,lease_expires_at,last_error,last_attempt_at)
+                        SELECT decision_id,%s,'PROCESSING',1,NOW()+(%s*INTERVAL '1 second'),NULL,NOW() FROM candidates
+                        ON CONFLICT (decision_id,channel_id) DO UPDATE SET
+                            status='PROCESSING', attempts=dispatch_ledgers.attempts+1,
+                            lease_expires_at=NOW()+(%s*INTERVAL '1 second'), last_error=NULL, last_attempt_at=NOW()
+                        WHERE dispatch_ledgers.status='FAILED' OR (dispatch_ledgers.status='PROCESSING' AND dispatch_ledgers.lease_expires_at < NOW())
+                        RETURNING decision_id
+                    )
+                    SELECT d.decision_id::text,d.listing_id,d.decision_state,d.confidence_score,d.expected_net_profit,
+                           d.safe_ceiling,d.normal_ceiling,d.aggressive_ceiling,d.evidence_ledger,
+                           l.listing_url,l.title,l.current_price
+                    FROM claimed c JOIN decisions d ON d.decision_id=c.decision_id JOIN listings l ON l.listing_id=d.listing_id
+                    ORDER BY d.evaluated_at ASC
+                """,(channel_id,list(states),min_expected_profit,limit,channel_id,lease_seconds,lease_seconds))
+                rows=[dict(r) if not isinstance(r,dict) else r for r in cur.fetchall()]
+                return [DispatchCandidate(**row) for row in rows]
+
+    def mark_dispatch_sent(self, decision_id, channel_id):
+        with self.connection.transaction():
+            with self.connection.cursor() as cur:
+                cur.execute("""UPDATE dispatch_ledgers SET status='SENT',sent_at=NOW(),lease_expires_at=NULL,last_error=NULL WHERE decision_id=%s AND channel_id=%s AND status='PROCESSING'""",(decision_id,channel_id))
+
+    def mark_dispatch_failed(self, decision_id, channel_id, error):
+        with self.connection.transaction():
+            with self.connection.cursor() as cur:
+                cur.execute("""UPDATE dispatch_ledgers SET status='FAILED',lease_expires_at=NULL,last_error=%s WHERE decision_id=%s AND channel_id=%s AND status='PROCESSING'""",(error[:2000],decision_id,channel_id))
 
 class AuctionWorker:
     def __init__(self, repository, evaluator): self.repository,self.evaluator=repository,evaluator
