@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sale-scanner-core"
+version = "0.3.0"
+description = "Explainable resale arbitrage valuation and auction decision engine"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+db = ["psycopg[binary]>=3.2,<4"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
