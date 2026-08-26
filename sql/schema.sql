@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS marketplace_connectors (
     connector_id VARCHAR(64) PRIMARY KEY, status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE', rate_limit_state JSONB DEFAULT '{}'::jsonb,
     last_success_at TIMESTAMPTZ, last_failure_at TIMESTAMPTZ, failure_count INT DEFAULT 0
 );
-
 CREATE TABLE IF NOT EXISTS saved_searches (
     search_id UUID PRIMARY KEY DEFAULT gen_random_uuid(), connector_id VARCHAR(64) NOT NULL, query TEXT NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT TRUE, poll_interval_seconds INT NOT NULL DEFAULT 300 CHECK (poll_interval_seconds >= 30),
@@ -55,10 +54,24 @@ CREATE TABLE IF NOT EXISTS saved_search_listings (
     fingerprint CHAR(64) NOT NULL, first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (search_id, listing_id)
 );
+CREATE TABLE IF NOT EXISTS dispatch_ledgers (
+    decision_id UUID REFERENCES decisions(decision_id) ON DELETE CASCADE,
+    channel_id VARCHAR(128) NOT NULL,
+    status VARCHAR(16) NOT NULL CHECK (status IN ('PROCESSING','SENT','FAILED')),
+    attempts INT NOT NULL DEFAULT 0,
+    lease_expires_at TIMESTAMPTZ,
+    last_error TEXT,
+    first_claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sent_at TIMESTAMPTZ,
+    PRIMARY KEY (decision_id, channel_id)
+);
 
 CREATE INDEX IF NOT EXISTS idx_listings_product_id ON listings(product_id);
 CREATE INDEX IF NOT EXISTS idx_listings_asset_id ON listings(asset_id);
 CREATE INDEX IF NOT EXISTS idx_auction_events_next_alert ON auction_events(next_alert_at);
 CREATE INDEX IF NOT EXISTS idx_decisions_listing_eval ON decisions(listing_id, evaluated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_dispatch_qualify ON decisions(decision_state, expected_net_profit, evaluated_at);
 CREATE INDEX IF NOT EXISTS idx_saved_searches_due ON saved_searches(next_poll_at) WHERE enabled=TRUE;
 CREATE INDEX IF NOT EXISTS idx_saved_search_listings_listing ON saved_search_listings(listing_id);
+CREATE INDEX IF NOT EXISTS idx_dispatch_ledgers_reclaim ON dispatch_ledgers(status, lease_expires_at);
