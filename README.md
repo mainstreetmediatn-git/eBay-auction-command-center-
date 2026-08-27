@@ -1,5 +1,7 @@
 # eBay Auction Command Center — Sale Scanner Core
 
+[![CI](https://github.com/mainstreetmediatn-git/eBay-auction-command-center-/actions/workflows/ci.yml/badge.svg)](https://github.com/mainstreetmediatn-git/eBay-auction-command-center-/actions/workflows/ci.yml)
+
 Explainable resale-arbitrage engine for marketplace ingestion, comparable-sale valuation, financial ceilings, auction state decisions, and auditable persistence.
 
 ## Included
