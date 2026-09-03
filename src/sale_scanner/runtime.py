@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -80,7 +81,8 @@ class WebhookDispatchChannel:
             raise ValueError("webhook URL must start with http:// or https://")
         self.url = url
         self.timeout_seconds = timeout_seconds
-        self.channel_id = "webhook:" + re.sub(r"[^a-zA-Z0-9_.-]", "_", url)[:96]
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+        self.channel_id = f"webhook:{digest}"
 
     def send(self, candidate: DispatchCandidate) -> None:
         payload = asdict(candidate)
