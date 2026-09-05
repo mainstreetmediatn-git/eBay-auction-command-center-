@@ -97,6 +97,7 @@ class EbayConnector(MarketplaceConnector):
         listing_type = self._listing_type(buying_options)
         price_obj = item.get("currentBidPrice") if "AUCTION" in buying_options else item.get("price")
         price_obj = price_obj or item.get("price") or item.get("currentBidPrice") or {}
+        original_price_obj = item.get("marketingPrice", {}).get("originalPrice") or {}
         seller = item.get("seller") or {}
         location = item.get("itemLocation") or {}
         image = item.get("image") or {}
@@ -104,6 +105,23 @@ class EbayConnector(MarketplaceConnector):
         stable_source_id = str(item.get("legacyItemId") or item.get("itemId") or "")
         if not stable_source_id:
             raise EbayConnectorError("eBay item payload missing item identifier")
+
+        shipping_cost = self._extract_shipping(item)
+        image_urls = []
+        if image.get("imageUrl"):
+            image_urls.append(str(image["imageUrl"]))
+        for additional in item.get("additionalImages") or []:
+            url = additional.get("imageUrl")
+            if url and url not in image_urls:
+                image_urls.append(str(url))
+
+        shipping_display = "Free shipping" if shipping_cost == 0 else f"+ ${shipping_cost:.2f} shipping"
+        current_price = _money(price_obj.get("value"))
+        price_display = f"${current_price:.2f}"
+        if listing_type == "AUCTION":
+            price_display = f"${current_price:.2f} current bid"
+
+        store = seller.get("sellerStoreName") or seller.get("storeName")
         return NormalizedListing(
             listing_id=f"ebay_{stable_source_id}",
             connector_id=self.connector_id,
@@ -111,8 +129,8 @@ class EbayConnector(MarketplaceConnector):
             listing_type=listing_type,
             title=str(item.get("title") or "").strip(),
             listing_url=str(item.get("itemWebUrl") or item.get("itemAffiliateWebUrl") or ""),
-            current_price=_money(price_obj.get("value")),
-            shipping_cost=self._extract_shipping(item),
+            current_price=current_price,
+            shipping_cost=shipping_cost,
             currency=str(price_obj.get("currency") or "USD"),
             condition=item.get("condition"),
             condition_id=_optional_str(item.get("conditionId")),
@@ -125,6 +143,17 @@ class EbayConnector(MarketplaceConnector):
             thumbnail_url=_optional_str(image.get("imageUrl")),
             category_ids=[str(c.get("categoryId")) for c in categories if c.get("categoryId")],
             buying_options=buying_options,
+            subtitle=_optional_str(item.get("subtitle") or item.get("shortDescription")),
+            original_price=_optional_money(original_price_obj.get("value")),
+            price_display=price_display,
+            shipping_display=shipping_display,
+            delivery_display=self._delivery_display(item),
+            image_urls=image_urls,
+            item_location_country=_optional_str(location.get("country")),
+            seller_top_rated=bool(seller.get("topRatedSeller")) if "topRatedSeller" in seller else None,
+            seller_store_name=_optional_str(store),
+            priority_listing=bool(item.get("priorityListing")) if "priorityListing" in item else None,
+            best_offer_enabled="BEST_OFFER" in buying_options,
             raw_payload=dict(item),
         )
 
@@ -147,6 +176,19 @@ class EbayConnector(MarketplaceConnector):
             if shipping_cost.get("value") is not None:
                 prices.append(_money(shipping_cost.get("value")))
         return min(prices) if prices else Decimal("0")
+
+    def _delivery_display(self, item: Mapping[str, Any]) -> Optional[str]:
+        options = item.get("shippingOptions") or []
+        if not options:
+            return None
+        option = options[0]
+        min_date = option.get("minEstimatedDeliveryDate")
+        max_date = option.get("maxEstimatedDeliveryDate")
+        if min_date and max_date:
+            return f"Estimated delivery {min_date} – {max_date}"
+        if min_date:
+            return f"Estimated delivery from {min_date}"
+        return None
 
     def _get_access_token(self) -> str:
         now = time.time()
@@ -220,6 +262,11 @@ def _money(value: Any) -> Decimal:
         return Decimal(str(value)).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError, TypeError) as exc:
         raise EbayConnectorError(f"invalid monetary value from eBay: {value!r}") from exc
+
+def _optional_money(value: Any) -> Optional[Decimal]:
+    if value in (None, ""):
+        return None
+    return _money(value)
 
 def _optional_decimal(value: Any) -> Optional[Decimal]:
     if value in (None, ""):
