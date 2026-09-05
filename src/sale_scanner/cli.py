@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
+from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
 
@@ -49,6 +51,64 @@ def add_search(args) -> int:
     return 0
 
 
+def _jsonable(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, list):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    return value
+
+
+def scan(args) -> int:
+    """Run an immediate eBay search and actually display the listings."""
+    connector = EbayConnector(EbayConfig.from_env())
+    filters = []
+    if args.auctions:
+        filters.append("buyingOptions:{AUCTION}")
+    if args.max_price is not None:
+        filters.append(f"price:[..{args.max_price}]")
+        filters.append("priceCurrency:USD")
+    result = connector.search(
+        args.query,
+        limit=args.limit,
+        filter_expression=",".join(filters) if filters else None,
+        sort="endingSoonest" if args.ending_soonest else args.sort,
+        fieldgroups="EXTENDED",
+    )
+
+    if args.json:
+        payload = {
+            "query": args.query,
+            "total": result.total,
+            "listings": [_jsonable(asdict(item)) for item in result.listings],
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"\nEBAY RESULTS — {args.query}  ({len(result.listings)} shown / {result.total or '?'} found)\n")
+    for index, item in enumerate(result.listings, start=1):
+        seller = item.seller_id or "seller unavailable"
+        feedback = ""
+        if item.seller_feedback_percentage is not None:
+            feedback = f" · {item.seller_feedback_percentage}% positive"
+        bids = f" · {item.bid_count} bid{'s' if item.bid_count != 1 else ''}" if item.listing_type == "AUCTION" else ""
+        ending = f" · ends {item.end_time_iso}" if item.end_time_iso else ""
+        condition = item.condition or "Condition unavailable"
+        print(f"{index:>2}. {item.title}")
+        if item.subtitle:
+            print(f"    {item.subtitle}")
+        print(f"    {condition}")
+        print(f"    {item.price_display or ('$' + str(item.current_price))}{bids}{ending}")
+        print(f"    {item.shipping_display or ''}{(' · ' + item.delivery_display) if item.delivery_display else ''}")
+        print(f"    {seller}{feedback}{' · Top Rated' if item.seller_top_rated else ''}")
+        if item.thumbnail_url:
+            print(f"    image: {item.thumbnail_url}")
+        print(f"    {item.listing_url}\n")
+    return 0
+
+
 def run_agent(args) -> int:
     repo = _repo()
     connector = EbayConnector(EbayConfig.from_env())
@@ -82,6 +142,16 @@ def main() -> int:
     p.add_argument("--interval", type=int, default=300)
     p.set_defaults(func=add_search)
 
+    p = sub.add_parser("scan", help="search eBay now and print visible listing results")
+    p.add_argument("query")
+    p.add_argument("--limit", type=int, default=25)
+    p.add_argument("--max-price", type=Decimal)
+    p.add_argument("--auctions", action="store_true")
+    p.add_argument("--ending-soonest", action="store_true", default=False)
+    p.add_argument("--sort", choices=["price", "newlyListed", "endingSoonest"], default=None)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=scan)
+
     p = sub.add_parser("run")
     p.add_argument("--once", action="store_true")
     p.add_argument("--sleep", type=int, default=30)
@@ -95,6 +165,8 @@ def main() -> int:
         parser.error("--interval must be >= 30 seconds")
     if getattr(args, "sleep", 30) < 5:
         parser.error("--sleep must be >= 5 seconds")
+    if getattr(args, "limit", 25) < 1 or getattr(args, "limit", 25) > 200:
+        parser.error("--limit must be between 1 and 200")
     return args.func(args)
 
 
