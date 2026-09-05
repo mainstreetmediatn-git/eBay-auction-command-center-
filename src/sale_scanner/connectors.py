@@ -26,6 +26,20 @@ class NormalizedListing:
     thumbnail_url: Optional[str] = None
     category_ids: List[str] = field(default_factory=list)
     buying_options: List[str] = field(default_factory=list)
+    # Rich marketplace presentation fields. These intentionally preserve the
+    # information a shopper sees in marketplace search results instead of
+    # flattening the listing down to valuation-only attributes.
+    subtitle: Optional[str] = None
+    original_price: Optional[Decimal] = None
+    price_display: Optional[str] = None
+    shipping_display: Optional[str] = None
+    delivery_display: Optional[str] = None
+    image_urls: List[str] = field(default_factory=list)
+    item_location_country: Optional[str] = None
+    seller_top_rated: Optional[bool] = None
+    seller_store_name: Optional[str] = None
+    priority_listing: Optional[bool] = None
+    best_offer_enabled: bool = False
     raw_payload: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
