@@ -8,7 +8,8 @@ from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
 
-from .ebay import EbayConfig, EbayConnector
+from .ebay import EbayConfig
+from .hybrid_ebay import HybridEbayConnector
 from .repositories import SaleScannerRepository
 from .runtime import SaleScannerAgent
 
@@ -18,6 +19,10 @@ def _repo() -> SaleScannerRepository:
     if not dsn:
         raise SystemExit("DATABASE_URL is required")
     return SaleScannerRepository.connect(dsn)
+
+
+def _connector() -> HybridEbayConnector:
+    return HybridEbayConnector(EbayConfig.from_env())
 
 
 def init_db(args) -> int:
@@ -62,8 +67,8 @@ def _jsonable(value):
 
 
 def scan(args) -> int:
-    """Run an immediate eBay search and actually display the listings."""
-    connector = EbayConnector(EbayConfig.from_env())
+    """Run an immediate hybrid eBay API + TinyFish browser search."""
+    connector = _connector()
     filters = []
     if args.auctions:
         filters.append("buyingOptions:{AUCTION}")
@@ -76,25 +81,37 @@ def scan(args) -> int:
         filter_expression=",".join(filters) if filters else None,
         sort="endingSoonest" if args.ending_soonest else args.sort,
         fieldgroups="EXTENDED",
+        browser_enrich=not args.api_only,
     )
 
     if args.json:
         payload = {
             "query": args.query,
             "total": result.total,
+            "warnings": result.warnings,
             "listings": [_jsonable(asdict(item)) for item in result.listings],
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print(f"\nEBAY RESULTS — {args.query}  ({len(result.listings)} shown / {result.total or '?'} found)\n")
+    source = "eBay API + TinyFish" if not args.api_only else "eBay API"
+    print(f"\n{source.upper()} RESULTS — {args.query}  ({len(result.listings)} shown / {result.total or '?'} found)\n")
+    for warning in result.warnings:
+        print(f"warning: {warning}")
+    if result.warnings:
+        print()
     for index, item in enumerate(result.listings, start=1):
         seller = item.seller_id or "seller unavailable"
         feedback = ""
         if item.seller_feedback_percentage is not None:
             feedback = f" · {item.seller_feedback_percentage}% positive"
+        elif item.raw_payload.get("tinyfish_seller_feedback"):
+            feedback = f" · {item.raw_payload['tinyfish_seller_feedback']}"
         bids = f" · {item.bid_count} bid{'s' if item.bid_count != 1 else ''}" if item.listing_type == "AUCTION" else ""
         ending = f" · ends {item.end_time_iso}" if item.end_time_iso else ""
+        time_left = item.raw_payload.get("tinyfish_time_remaining")
+        if time_left:
+            ending += f" · {time_left} left"
         condition = item.condition or "Condition unavailable"
         print(f"{index:>2}. {item.title}")
         if item.subtitle:
@@ -111,7 +128,7 @@ def scan(args) -> int:
 
 def run_agent(args) -> int:
     repo = _repo()
-    connector = EbayConnector(EbayConfig.from_env())
+    connector = _connector()
     agent = SaleScannerAgent(repo, connector, min_expected_profit=Decimal(str(args.min_profit)))
     try:
         while True:
@@ -149,6 +166,7 @@ def main() -> int:
     p.add_argument("--auctions", action="store_true")
     p.add_argument("--ending-soonest", action="store_true", default=False)
     p.add_argument("--sort", choices=["price", "newlyListed", "endingSoonest"], default=None)
+    p.add_argument("--api-only", action="store_true", help="disable TinyFish browser enrichment")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=scan)
 
