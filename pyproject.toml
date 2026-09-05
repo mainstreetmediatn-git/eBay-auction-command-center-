@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sale-scanner-core"
-version = "0.4.0"
+version = "0.5.0"
 description = "Explainable resale arbitrage valuation and auction decision engine"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["tinyfish>=0"]
 
 [project.optional-dependencies]
 db = ["psycopg[binary]>=3.2,<4"]
